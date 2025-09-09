@@ -14,12 +14,11 @@ Parameters:
     Type: String
     Default: t3.micro
     AllowedValues: [t2.micro, t3.micro, t3a.micro]
-
-Resources:
   AmiAL2023:
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
 
+Resources:
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -30,6 +29,7 @@ Resources:
 
   Igw:
     Type: AWS::EC2::InternetGateway
+
   AttachIgw:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
@@ -39,8 +39,10 @@ Resources:
   RtPublic:
     Type: AWS::EC2::RouteTable
     Properties: { VpcId: !Ref Vpc }
+
   RtDefault:
     Type: AWS::EC2::Route
+    DependsOn: AttachIgw
     Properties:
       RouteTableId: !Ref RtPublic
       DestinationCidrBlock: 0.0.0.0/0
@@ -54,6 +56,7 @@ Resources:
       MapPublicIpOnLaunch: true
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags: [{ Key: Name, Value: lab3-public-good }]
+
   AssocRtGood:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties: { SubnetId: !Ref SubnetGood, RouteTableId: !Ref RtPublic }
@@ -66,6 +69,7 @@ Resources:
       MapPublicIpOnLaunch: true
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags: [{ Key: Name, Value: lab3-public-blocked }]
+
   AssocRtBlocked:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties: { SubnetId: !Ref SubnetBlocked, RouteTableId: !Ref RtPublic }
@@ -84,9 +88,22 @@ Resources:
         - { IpProtocol: -1, CidrIp: 0.0.0.0/0 }
 
   # ----------------- NACLs -----------------
+  # "Good" NACL: allow HTTP, SSH (22) from YourIpCidr, and ICMP within VPC; plus ephemeral returns.
   GoodNacl:
     Type: AWS::EC2::NetworkAcl
     Properties: { VpcId: !Ref Vpc, Tags: [{ Key: Name, Value: lab3-nacl-good }] }
+
+  GoodNaclIn22:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref GoodNacl
+      RuleNumber: 90
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: !Ref YourIpCidr
+      PortRange: { From: 22, To: 22 }
+
   GoodNaclIn80:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -97,6 +114,7 @@ Resources:
       Egress: false
       CidrBlock: 0.0.0.0/0
       PortRange: { From: 80, To: 80 }
+
   GoodNaclInEphemeral:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -107,6 +125,20 @@ Resources:
       Egress: false
       CidrBlock: 0.0.0.0/0
       PortRange: { From: 1024, To: 65535 }
+
+  GoodNaclInIcmpVpc:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref GoodNacl
+      RuleNumber: 120
+      Protocol: 1
+      RuleAction: allow
+      Egress: false
+      CidrBlock: 10.50.0.0/16
+      Icmp:
+        Type: -1
+        Code: -1
+
   GoodNaclOut80:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -117,6 +149,7 @@ Resources:
       Egress: true
       CidrBlock: 0.0.0.0/0
       PortRange: { From: 80, To: 80 }
+
   GoodNaclOutEphemeral:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -127,15 +160,31 @@ Resources:
       Egress: true
       CidrBlock: 0.0.0.0/0
       PortRange: { From: 1024, To: 65535 }
+
+  GoodNaclOutIcmpVpc:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref GoodNacl
+      RuleNumber: 120
+      Protocol: 1
+      RuleAction: allow
+      Egress: true
+      CidrBlock: 10.50.0.0/16
+      Icmp:
+        Type: -1
+        Code: -1
+
   AssocGoodNacl:
     Type: AWS::EC2::SubnetNetworkAclAssociation
     Properties:
       SubnetId: !Ref SubnetGood
       NetworkAclId: !Ref GoodNacl
 
+  # "Blocked" NACL: demonstrate how NACL egress can break things
   BlockedNacl:
     Type: AWS::EC2::NetworkAcl
     Properties: { VpcId: !Ref Vpc, Tags: [{ Key: Name, Value: lab3-nacl-blocked }] }
+
   BlockedNaclIn80:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -146,6 +195,7 @@ Resources:
       Egress: false
       CidrBlock: 0.0.0.0/0
       PortRange: { From: 80, To: 80 }
+
   BlockedNaclDenyOutEphemeral:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -156,6 +206,7 @@ Resources:
       Egress: true
       CidrBlock: 0.0.0.0/0
       PortRange: { From: 1024, To: 65535 }
+
   BlockedNaclAllowOut80:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -166,6 +217,7 @@ Resources:
       Egress: true
       CidrBlock: 0.0.0.0/0
       PortRange: { From: 80, To: 80 }
+
   AssocBlockedNacl:
     Type: AWS::EC2::SubnetNetworkAclAssociation
     Properties:
@@ -240,6 +292,7 @@ Resources:
 
   VpcFlowLogs:
     Type: AWS::EC2::FlowLog
+    DependsOn: FlowLogsGroup
     Properties:
       DeliverLogsPermissionArn: !GetAtt FlowLogsRole.Arn
       LogGroupName: /vpc/flowlogs/lab3
