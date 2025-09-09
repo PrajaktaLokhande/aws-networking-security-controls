@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Networking Lab - Network Security Controls (SGs vs NACLs) + VPC Flow Logs to CloudWatch Logs.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 KeyPair name for SSH
+  YourIpCidr:
+    Type: String
+    Description: Your IP in CIDR form for SSH to instances (e.g., 203.0.113.10/32)
+    Default: 0.0.0.0/0
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t2.micro, t3.micro, t3a.micro]
+
+Resources:
+  AmiAL2023:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.50.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: lab3-vpc }]
+
+  Igw:
+    Type: AWS::EC2::InternetGateway
+  AttachIgw:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref Igw
+
+  RtPublic:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  RtDefault:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RtPublic
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Igw
+
+  SubnetGood:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.50.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: lab3-public-good }]
+  AssocRtGood:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubnetGood, RouteTableId: !Ref RtPublic }
+
+  SubnetBlocked:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.50.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: lab3-public-blocked }]
+  AssocRtBlocked:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubnetBlocked, RouteTableId: !Ref RtPublic }
+
+  # ----------------- Security Group -----------------
+  WebSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web SG — HTTP from world, SSH from your IP, ICMP within VPC
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref YourIpCidr }
+        - { IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: 10.50.0.0/16 }
+      SecurityGroupEgress:
+        - { IpProtocol: -1, CidrIp: 0.0.0.0/0 }
+
+  # ----------------- NACLs -----------------
+  GoodNacl:
+    Type: AWS::EC2::NetworkAcl
+    Properties: { VpcId: !Ref Vpc, Tags: [{ Key: Name, Value: lab3-nacl-good }] }
+  GoodNaclIn80:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref GoodNacl
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 80, To: 80 }
+  GoodNaclInEphemeral:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref GoodNacl
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 1024, To: 65535 }
+  GoodNaclOut80:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref GoodNacl
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: allow
+      Egress: true
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 80, To: 80 }
+  GoodNaclOutEphemeral:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref GoodNacl
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: allow
+      Egress: true
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 1024, To: 65535 }
+  AssocGoodNacl:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref SubnetGood
+      NetworkAclId: !Ref GoodNacl
+
+  BlockedNacl:
+    Type: AWS::EC2::NetworkAcl
+    Properties: { VpcId: !Ref Vpc, Tags: [{ Key: Name, Value: lab3-nacl-blocked }] }
+  BlockedNaclIn80:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref BlockedNacl
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 80, To: 80 }
+  BlockedNaclDenyOutEphemeral:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref BlockedNacl
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: deny
+      Egress: true
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 1024, To: 65535 }
+  BlockedNaclAllowOut80:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref BlockedNacl
+      RuleNumber: 120
+      Protocol: 6
+      RuleAction: allow
+      Egress: true
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 80, To: 80 }
+  AssocBlockedNacl:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref SubnetBlocked
+      NetworkAclId: !Ref BlockedNacl
+
+  # ----------------- EC2 Instances -----------------
+  Ec2Good:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiAL2023
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetGood
+      SecurityGroupIds: [ !Ref WebSg ]
+      Tags: [{ Key: Name, Value: EC2-Good }]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf -y install httpd iputils
+          echo "<h1>EC2-Good (10.50.1.0/24)</h1>" > /var/www/html/index.html
+          systemctl enable --now httpd
+
+  Ec2Blocked:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiAL2023
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetBlocked
+      SecurityGroupIds: [ !Ref WebSg ]
+      Tags: [{ Key: Name, Value: EC2-Blocked }]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf -y install httpd iputils
+          echo "<h1>EC2-Blocked (10.50.2.0/24)</h1>" > /var/www/html/index.html
+          systemctl enable --now httpd
+
+  # ----------------- Flow Logs to CloudWatch Logs -----------------
+  FlowLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /vpc/flowlogs/lab3
+      RetentionInDays: 3
+
+  FlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FlowLogsToCWL
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  VpcFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt FlowLogsRole.Arn
+      LogGroupName: /vpc/flowlogs/lab3
+      ResourceId: !Ref Vpc
+      ResourceType: VPC
+      TrafficType: ALL
+      MaxAggregationInterval: 60
+      Tags:
+        - Key: Name
+          Value: lab3-flowlogs
+
+Outputs:
+  GoodPublicIP:
+    Value: !GetAtt Ec2Good.PublicIp
+    Description: Public IP for EC2-Good
+  BlockedPublicIP:
+    Value: !GetAtt Ec2Blocked.PublicIp
+    Description: Public IP for EC2-Blocked
+  FlowLogsLogGroup:
+    Value: /vpc/flowlogs/lab3
+    Description: CloudWatch Logs log group for VPC Flow Logs
