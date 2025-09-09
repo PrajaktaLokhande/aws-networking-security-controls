@@ -78,7 +78,7 @@ Resources:
   WebSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Web SG — HTTP from world, SSH from your IP, ICMP within VPC
+      GroupDescription: Web SG - HTTP from world, SSH from your IP, ICMP within VPC
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
