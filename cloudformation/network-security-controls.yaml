@@ -14,9 +14,6 @@ Parameters:
     Type: String
     Default: t3.micro
     AllowedValues: [t2.micro, t3.micro, t3a.micro]
-  AmiAL2023:
-    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
 
 Resources:
   Vpc:
@@ -88,7 +85,6 @@ Resources:
         - { IpProtocol: -1, CidrIp: 0.0.0.0/0 }
 
   # ----------------- NACLs -----------------
-  # "Good" NACL: allow HTTP, SSH (22) from YourIpCidr, and ICMP within VPC; plus ephemeral returns.
   GoodNacl:
     Type: AWS::EC2::NetworkAcl
     Properties: { VpcId: !Ref Vpc, Tags: [{ Key: Name, Value: lab3-nacl-good }] }
@@ -180,7 +176,6 @@ Resources:
       SubnetId: !Ref SubnetGood
       NetworkAclId: !Ref GoodNacl
 
-  # "Blocked" NACL: demonstrate how NACL egress can break things
   BlockedNacl:
     Type: AWS::EC2::NetworkAcl
     Properties: { VpcId: !Ref Vpc, Tags: [{ Key: Name, Value: lab3-nacl-blocked }] }
@@ -227,90 +222,3 @@ Resources:
   # ----------------- EC2 Instances -----------------
   Ec2Good:
     Type: AWS::EC2::Instance
-    Properties:
-      ImageId: !Ref AmiAL2023
-      InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyName
-      SubnetId: !Ref SubnetGood
-      SecurityGroupIds: [ !Ref WebSg ]
-      Tags: [{ Key: Name, Value: EC2-Good }]
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -eux
-          dnf -y install httpd iputils
-          echo "<h1>EC2-Good (10.50.1.0/24)</h1>" > /var/www/html/index.html
-          systemctl enable --now httpd
-
-  Ec2Blocked:
-    Type: AWS::EC2::Instance
-    Properties:
-      ImageId: !Ref AmiAL2023
-      InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyName
-      SubnetId: !Ref SubnetBlocked
-      SecurityGroupIds: [ !Ref WebSg ]
-      Tags: [{ Key: Name, Value: EC2-Blocked }]
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -eux
-          dnf -y install httpd iputils
-          echo "<h1>EC2-Blocked (10.50.2.0/24)</h1>" > /var/www/html/index.html
-          systemctl enable --now httpd
-
-  # ----------------- Flow Logs to CloudWatch Logs -----------------
-  FlowLogsGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: /vpc/flowlogs/lab3
-      RetentionInDays: 3
-
-  FlowLogsRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: vpc-flow-logs.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: FlowLogsToCWL
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:DescribeLogGroups
-                  - logs:DescribeLogStreams
-                  - logs:PutLogEvents
-                Resource: "*"
-
-  VpcFlowLogs:
-    Type: AWS::EC2::FlowLog
-    DependsOn: FlowLogsGroup
-    Properties:
-      DeliverLogsPermissionArn: !GetAtt FlowLogsRole.Arn
-      LogGroupName: /vpc/flowlogs/lab3
-      ResourceId: !Ref Vpc
-      ResourceType: VPC
-      TrafficType: ALL
-      MaxAggregationInterval: 60
-      Tags:
-        - Key: Name
-          Value: lab3-flowlogs
-
-Outputs:
-  GoodPublicIP:
-    Value: !GetAtt Ec2Good.PublicIp
-    Description: Public IP for EC2-Good
-  BlockedPublicIP:
-    Value: !GetAtt Ec2Blocked.PublicIp
-    Description: Public IP for EC2-Blocked
-  FlowLogsLogGroup:
-    Value: /vpc/flowlogs/lab3
-    Description: CloudWatch Logs log group for VPC Flow Logs
